@@ -5,6 +5,7 @@ import os
 
 from inception_resnet_v1 import inception_resnet_v1, inference
 from utils import *
+from dense_net import *
 
 tf.flags.DEFINE_float("lr", 0.001, "learning rate (default: 0.001)")
 tf.flags.DEFINE_integer("num_checkpoints", 1, "Number of checkpoints to store (default: 5)")
@@ -63,7 +64,7 @@ def batch_iter(data, batch_size, num_epochs):
     pass
 
 
-image_folder = '/home/blue/data/img_align_celeba/'
+image_folder = '/home/blue/data/img_align_celeba_10000/'
 # image_folder = '/home/mawei/MsCelebV1-Faces-Aligned_160/'
 img_files = load_var('img_files', temp_folder='temps')
 if img_files == None:
@@ -174,7 +175,18 @@ def model(X, mask, p_keep_conv, batch_size):
         f_net_shape = [batch_size, 3, 3, 1792]
         up_sacle_net = tf.reshape(feature2, f_net_shape)
 
-    return get_generate_net(up_sacle_net, batch_size), ir_net
+        # use normal upsample net
+        # net = get_generate_net(up_sacle_net, batch_size)
+
+        # use dense net
+        densenet = DenseNet(growth_rate=12, layers_per_block=5, keep_prob=0.7, is_training=True)
+        #    c  96 192 384 768 1536
+        net = densenet.upsample_net(up_sacle_net, 
+            [   5,  10,  20,  40, 80, 160], 
+            [1536, 768, 384, 192, 96,   3],
+            FLAGS.batch_size)
+
+    return net, ir_net
 
 def D(X, weights=d_weights):
     net = X
