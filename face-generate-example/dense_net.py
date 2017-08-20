@@ -85,7 +85,7 @@ class DenseNet:
         return output
 
     def upsample_transition_layer(self, _input, ksize, num_output, batch_size):
-        shape = _input.get_shape()
+        shape = _input.get_shape().as_list()
         out_features = int(int(shape[-1]) * self.reduction)
         output = self.composite_function(
             _input, out_features=out_features, kernel_size=1)

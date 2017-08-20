@@ -3,7 +3,7 @@
 * @File Name:   		utils.py
 * @Author:				Wang Yang
 * @Created Date:		2017-08-19 09:08:47
-* @Last Modified Data:	2017-08-19 09:11:39
+* @Last Modified Data:	2017-08-20 13:09:35
 * @Desc:					
 *
 """
@@ -17,6 +17,7 @@ import matplotlib.gridspec as gridspec
 
 import os
 import re
+import numpy as np
 
 def save_var(var_name, var, temp_folder):
     if False == os.path.exists(temp_folder):

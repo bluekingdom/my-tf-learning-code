@@ -2,6 +2,7 @@ import tensorflow as tf
 import numpy as np
 import cv2
 import os
+import random
 
 from inception_resnet_v1 import inception_resnet_v1, inference
 from utils import *
@@ -34,11 +35,15 @@ def init_weights(shape):
 x_h = 160
 x_w = 160
 channels = 3
+batch_size = FLAGS.batch_size
 
-def batch_iter(data, batch_size, num_epochs):
+def batch_iter(data, batch_size, num_epochs, shuffle=False):
     data_size = len(data)
 
-    num_batches_per_epoch = int((len(data) - 1) / batch_size) + 1
+    num_batches_per_epoch = int((len(data) - 1) / batch_size)
+
+    if (shuffle):
+        random.shuffle(data)
 
     for epoch in range(num_epochs):
 
@@ -103,9 +108,9 @@ with tf.device('gpu:0'), tf.name_scope("deconv"):
     weights['rw6_conv'] = init_weights([3, 3, 1792, 1792])
     weights['rw6_bias'] = init_weights([1792])
 
-print('weights:')
-for (k,v) in weights.items():
-    print(k, v)
+# print('weights:')
+# for (k,v) in weights.items():
+#     print(k, v)
 
 d_net_base_output_size = 32
 d_weights = {}
@@ -122,9 +127,9 @@ with tf.device('gpu:0'), tf.name_scope("d_net"):
     d_weights['fc_w'] = init_weights([d_net_base_output_size * (2 ** (scale_step-1)), 1])
     d_weights['fc_b'] = init_weights([1])
 
-print('d_weights:')
-for (k,v) in d_weights.items():
-    print(k, v)
+# print('d_weights:')
+# for (k,v) in d_weights.items():
+#     print(k, v)
 
 def get_generate_net(net, batch_size):
     with tf.device('gpu:0'),tf.name_scope("generate_net"):
@@ -155,11 +160,10 @@ with tf.device('gpu:0'):
     X = tf.placeholder("float", [None, x_h, x_w, channels])
     mask = tf.placeholder("float", [None, x_h, x_w, channels], name='mask')
     p_keep_conv = tf.placeholder("float")
-batch_size = tf.shape(X)[0]
 
 def model(X, mask, p_keep_conv, batch_size):
-
     with tf.device('gpu:0'):
+
         tilde_X = mask * X  # corrupted X
 
         # f_net = vgg_a(tilde_X)
@@ -172,25 +176,24 @@ def model(X, mask, p_keep_conv, batch_size):
         feature1 = tf.contrib.layers.fully_connected(ir_net, fc_shape, scope='feature1')
         feature1 = tf.nn.dropout(feature1, p_keep_conv)
         feature2 = tf.contrib.layers.fully_connected(feature1, 3 * 3 * 1792, scope='feature2')
-        f_net_shape = [batch_size, 3, 3, 1792]
+        f_net_shape = [tf.shape(X)[0], 3, 3, 1792]
         up_sacle_net = tf.reshape(feature2, f_net_shape)
 
         # use normal upsample net
-        # net = get_generate_net(up_sacle_net, batch_size)
+        net = get_generate_net(up_sacle_net, batch_size)
 
         # use dense net
-        densenet = DenseNet(growth_rate=12, layers_per_block=5, keep_prob=0.7, is_training=True)
+        # densenet = DenseNet(growth_rate=24, layers_per_block=5, keep_prob=0.8, is_training=True)
         #    c  96 192 384 768 1536
-        net = densenet.upsample_net(up_sacle_net, 
-            [   5,  10,  20,  40, 80, 160], 
-            [1536, 768, 384, 192, 96,   3],
-            FLAGS.batch_size)
+        # net = densenet.upsample_net(up_sacle_net, 
+        #     [   5,  10,  20,  40, 80, 160], 
+        #     [1536, 768, 384, 192, 96,   3],
+        #     batch_size)
 
     return net, ir_net
 
 def D(X, weights=d_weights):
     net = X
-
     for i in range(scale_step):
         net = tf.nn.conv2d(net, weights['conv%d' % (i+1)], strides=[1,1,1,1], padding="SAME")
         net = tf.nn.bias_add(net, weights['bias%d' % (i+1)])
@@ -236,7 +239,6 @@ saver = tf.train.Saver(tf.global_variables(), max_to_keep=FLAGS.num_checkpoints)
 # Launch the graph in a session
 with tf.Session() as sess:
 
-    batch_size = FLAGS.batch_size
     # you need to initialize all variables
     tf.global_variables_initializer().run()
 
@@ -263,6 +265,7 @@ with tf.Session() as sess:
         # train
         train_batch = batch_iter(train_files, batch_size, num_epochs=1)
         for batch in train_batch:
+            # print('real batch size: %d' % len(batch))
 
             mask_np = np.random.binomial(1, 1 - FLAGS.corruption_level, batch.shape)
 
@@ -272,12 +275,14 @@ with tf.Session() as sess:
 
             if (train_batch_idx % FLAGS.val_pre_train_batch_iter) == 1:
                 # test
-                val_batch = batch_iter(val_files, batch_size, num_epochs=1)
+                val_batch = batch_iter(val_files, batch_size, num_epochs=1, shuffle=True)
                 val_loss = 0
                 val_iter_count = 0
                 discriminator_score = 0
 
                 for val_b in val_batch:
+
+                    # print('real val batch size: %d' % len(val_b))
                     if val_iter_count > 10: break
                     val_iter_count += 1
                     val_mask_np = np.random.binomial(1, 1 - FLAGS.corruption_level, val_b.shape)
