@@ -1,8 +1,6 @@
 import tensorflow as tf
 import numpy as np
-import cv2
 import os
-import random
 
 from inception_resnet_v1 import inception_resnet_v1, inference
 from utils import *
@@ -18,7 +16,6 @@ tf.flags.DEFINE_integer("run_discriminator_per_train_batch_idx", 2, "")
 tf.flags.DEFINE_float("gan_coef", 0.02, "gan loss coef")
 tf.flags.DEFINE_integer("batch_size", 64, "batch size")
 tf.flags.DEFINE_integer("total_epoch", 100, "total epoch number")
-
 
 FLAGS = tf.flags.FLAGS
 FLAGS._parse_flags()
@@ -37,80 +34,13 @@ x_w = 160
 channels = 3
 batch_size = FLAGS.batch_size
 
-def batch_iter(data, batch_size, num_epochs, shuffle=False):
-    data_size = len(data)
-
-    num_batches_per_epoch = int((len(data) - 1) / batch_size)
-
-    if (shuffle):
-        random.shuffle(data)
-
-    for epoch in range(num_epochs):
-
-        for batch_num in range(num_batches_per_epoch):
-            start_index = batch_num * batch_size
-            end_index = min((batch_num + 1) * batch_size, data_size)
-            batch = []
-            for d in data[start_index:end_index]:
-                try:
-                    img = cv2.resize(cv2.imread(d), (x_h, x_w))  
-                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                    img = img.astype(np.float32) / 255.0
-                    batch.append(img) 
-                except Exception as err:
-                    print(err) 
-                    # batch = [cv2.resize(cv2.imread(d), (x_h, x_w)) for d in data[start_index:end_index]]
-
-            if len(batch) == 0:
-                continue
-
-            yield np.array(batch)
-        pass
-    pass
-
-
 image_folder = '/home/blue/data/img_align_celeba_10000/'
 # image_folder = '/home/mawei/MsCelebV1-Faces-Aligned_160/'
-img_files = load_var('img_files', temp_folder='temps')
-if img_files == None:
-    img_files = []
-    for parent, folders, filenames in os.walk(image_folder):
-        for filename in filenames:
-            line = parent + '/' + filename
-            #print(line)
-            img_files.append(line)
-        pass
-    save_var('img_files', img_files, temp_folder='temps')
-
-print('total image file: %d' % len(img_files))
-val_count = int(len(img_files) * FLAGS.val_ratio) 
-train_files = img_files[:-val_count]
-val_files = img_files[-val_count:]
+train_files, val_files = load_train_val_data(image_folder, FLAGS.val_ratio)
 
 base_output_size = 96
 
 scale_step = 6
-weights = {}
-
-print('init weights\n')
-with tf.device('gpu:0'), tf.name_scope("deconv"):
-    for i in range(1, scale_step + 1, 1):
-        output_scale = 2 ** (i-2)
-        o1 = output_scale * base_output_size if i > 1 else channels
-        o2 = 2 * output_scale * base_output_size
-        shape = [3, 3, int(o1), int(o2)]
-        # print(i, shape)
-        weights['rw%d' % i] = init_weights(shape)
-        shape = [3, 3, int(o2), int(o2)]
-        weights['rw%d_conv' % i] = init_weights(shape)
-        weights['rw%d_bias' % i] = init_weights([int(o2)])
-    weights['rw6'] = init_weights([3, 3, 1536, 1792])
-    weights['rw6_conv'] = init_weights([3, 3, 1792, 1792])
-    weights['rw6_bias'] = init_weights([1792])
-
-# print('weights:')
-# for (k,v) in weights.items():
-#     print(k, v)
 
 d_net_base_output_size = 32
 d_weights = {}
@@ -132,7 +62,28 @@ with tf.device('gpu:0'), tf.name_scope("d_net"):
 #     print(k, v)
 
 def get_generate_net(net, batch_size):
-    with tf.device('gpu:0'),tf.name_scope("generate_net"):
+
+    weights = {}
+    print('init weights\n')
+    with tf.device('gpu:0'), tf.name_scope("generate_net"):
+        for i in range(1, scale_step + 1, 1):
+            output_scale = 2 ** (i-2)
+            o1 = output_scale * base_output_size if i > 1 else channels
+            o2 = 2 * output_scale * base_output_size
+            shape = [3, 3, int(o1), int(o2)]
+            # print(i, shape)
+            weights['rw%d' % i] = init_weights(shape)
+            shape = [3, 3, int(o2), int(o2)]
+            weights['rw%d_conv' % i] = init_weights(shape)
+            weights['rw%d_bias' % i] = init_weights([int(o2)])
+        weights['rw6'] = init_weights([3, 3, 1536, 1792])
+        weights['rw6_conv'] = init_weights([3, 3, 1792, 1792])
+        weights['rw6_bias'] = init_weights([1792])
+
+        # print('weights:')
+        # for (k,v) in weights.items():
+        #     print(k, v)
+
         for i in range(scale_step - 1, -1, -1):
             #  160  80  40  20  10    5
             #    c  96 192 384 768 1536

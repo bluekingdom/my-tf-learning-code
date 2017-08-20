@@ -18,6 +18,8 @@ import matplotlib.gridspec as gridspec
 import os
 import re
 import numpy as np
+import random
+import cv2
 
 def save_var(var_name, var, temp_folder):
     if False == os.path.exists(temp_folder):
@@ -84,3 +86,53 @@ def vis(images, save_name):
     if False == os.path.exists(save_path):
         os.makedirs(save_path)
     plt.savefig('./result_imgs/' + save_name + '_vis.png')
+
+def batch_iter(data, batch_size, num_epochs, resize_size=(160, 160), shuffle=False):
+    data_size = len(data)
+
+    num_batches_per_epoch = int((len(data) - 1) / batch_size)
+
+    if (shuffle):
+        random.shuffle(data)
+
+    for epoch in range(num_epochs):
+
+        for batch_num in range(num_batches_per_epoch):
+            start_index = batch_num * batch_size
+            end_index = min((batch_num + 1) * batch_size, data_size)
+            batch = []
+            for d in data[start_index:end_index]:
+                try:
+                    img = cv2.resize(cv2.imread(d), resize_size)  
+                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    img = img.astype(np.float32) / 255.0
+                    batch.append(img) 
+                except Exception as err:
+                    print(err) 
+                    # batch = [cv2.resize(cv2.imread(d), (x_h, x_w)) for d in data[start_index:end_index]]
+
+            if len(batch) == 0:
+                continue
+
+            yield np.array(batch)
+        pass
+    pass
+
+def load_train_val_data(image_folder, val_ratio):
+    img_files = load_var('img_files', temp_folder='temps')
+    if img_files == None:
+        img_files = []
+        for parent, folders, filenames in os.walk(image_folder):
+            for filename in filenames:
+                line = parent + '/' + filename
+                #print(line)
+                img_files.append(line)
+            pass
+        save_var('img_files', img_files, temp_folder='temps')
+
+    print('total image file: %d' % len(img_files))
+    val_count = int(len(img_files) * val_ratio) 
+    train_files = img_files[:-val_count]
+    val_files = img_files[-val_count:]
+
+    return train_files, val_files
