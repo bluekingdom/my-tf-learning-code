@@ -22,7 +22,7 @@ tf.flags.DEFINE_string("checkpoint_file", "", "model restore")
 tf.flags.DEFINE_integer("val_pre_train_batch_iter", 50, "val model")
 tf.flags.DEFINE_float("corruption_level", 0.2, "corruption_level")
 tf.flags.DEFINE_float("val_ratio", 0.05, "val data ratio")
-tf.flags.DEFINE_integer("run_discriminator_per_train_batch_idx", 100, "")
+tf.flags.DEFINE_integer("run_discriminator_per_train_batch_idx", 5, "")
 tf.flags.DEFINE_integer("run_generator_per_train_batch_idx", 1, "")
 tf.flags.DEFINE_integer("batch_size", 64, "batch size")
 tf.flags.DEFINE_integer("total_epoch", 100, "total epoch number")
@@ -41,6 +41,7 @@ def lrelu(x, leak=0.3, name="lrelu"):
         f2 = 0.5 * (1 - leak)
         return f1 * x + f2 * abs(x)
 
+z_dim = 100
 feature_length =  128
 x_h = 160
 x_w = 160
@@ -56,6 +57,7 @@ train_files, val_files = load_train_val_data(image_folder, FLAGS.val_ratio)
 
 input_image = tf.placeholder("float", [None, x_h, x_w, channels])
 mask = tf.placeholder("float", [None, x_h, x_w, channels], name='mask')
+z = tf.placeholder("float", [None, z_dim], name='z')
 
 def get_feature():
 
@@ -65,17 +67,27 @@ def get_feature():
 
     return feature
 
+# def generator_mlp(z):
+#     train = ly.fully_connected(
+#         z, ngf, activation_fn=lrelu, normalizer_fn=ly.batch_norm)
+#     train = ly.fully_connected(
+#         train, ngf, activation_fn=lrelu, normalizer_fn=ly.batch_norm)
+#     train = ly.fully_connected(
+#         train, ngf, activation_fn=lrelu, normalizer_fn=ly.batch_norm)
+#     # train = ly.fully_connected(train, feature_length, activation_fn=tf.nn.tanh, normalizer_fn=ly.batch_norm)
+#     train = ly.fully_connected(train, feature_length, 
+#         activation_fn=tf.nn.tanh, normalizer_fn=None)
+#     return train
+
 def generator_mlp(z):
     train = ly.fully_connected(
-        z, ngf, activation_fn=lrelu, normalizer_fn=ly.batch_norm)
+        z, ngf, activation_fn=tf.nn.relu)
     train = ly.fully_connected(
-        train, ngf, activation_fn=lrelu, normalizer_fn=ly.batch_norm)
+        train, ngf, activation_fn=tf.nn.relu)
     train = ly.fully_connected(
-        train, ngf, activation_fn=lrelu, normalizer_fn=ly.batch_norm)
-    # train = ly.fully_connected(train, feature_length, activation_fn=tf.nn.tanh, normalizer_fn=ly.batch_norm)
-    train = ly.fully_connected(train, feature_length, 
-        activation_fn=None, normalizer_fn=None)
-    return train
+        train, ngf, activation_fn=tf.nn.relu)
+    train = ly.fully_connected(train, feature_length, activation_fn=tf.nn.tanh)
+    return train   
 
 def critic_mlp(x, reuse=False):
     with tf.variable_scope('critic') as scope:
@@ -89,18 +101,18 @@ def critic_mlp(x, reuse=False):
 
 def build_graph():
 
-    # X = tf.placeholder("float", [None, feature_length], name='X')
     X = get_feature()
-    z_dim = X.get_shape().as_list()[1]
+    # z_dim = X.get_shape().as_list()[1]
 
-    noise_dist = tf.contrib.distributions.Normal(0., 1.)
-    z = noise_dist.sample((batch_size, z_dim))
+    # noise_dist = tf.contrib.distributions.Normal(-1., 1.)
+    # z = noise_dist.sample((batch_size, z_dim))
 
     with tf.variable_scope('generator'):
         train = generator_mlp(z)
     true_logit = critic_mlp(X)
     fake_logit = critic_mlp(train, reuse=True)
-    c_loss = tf.reduce_mean(fake_logit - true_logit)
+    # c_loss = tf.reduce_mean(fake_logit - true_logit)
+    c_loss = tf.reduce_mean(fake_logit) - tf.reduce_mean(true_logit)
     g_loss = tf.reduce_mean(-fake_logit)
 
     theta_g = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='generator')
@@ -152,7 +164,7 @@ def train():
 
         train_batch_idx = 0
         for imgs_batch in train_imgs_batch:
-
+            noise = np.random.normal(size=(imgs_batch.shape[0], z_dim))
             mask_np = np.random.binomial(1, 1 - FLAGS.corruption_level, imgs_batch.shape)
             train_batch_idx += 1
 
@@ -166,21 +178,22 @@ def train():
                     val_iter_count += 1
                     val_mask_np = np.random.binomial(1, 1 - FLAGS.corruption_level, val_b.shape)
 
-                    val_loss += sess.run(tf.reduce_mean(c_loss), feed_dict={input_image: val_b, mask: val_mask_np})
+                    val_loss += sess.run(tf.reduce_mean(c_loss), feed_dict={input_image: val_b, mask: val_mask_np, z: noise})
 
                 val_loss /= val_iter_count
                 print('iter: %6d, val_loss: %0.5f' % (train_batch_idx, val_loss))
                 pass
 
             cl_m = 0
-            for i in range(FLAGS.run_discriminator_per_train_batch_idx):
-                _, cl = sess.run([opt_c, tf.reduce_mean(c_loss)], feed_dict={input_image: imgs_batch, mask: mask_np})
+            c_count = FLAGS.run_discriminator_per_train_batch_idx if train_batch_idx > 25 else 20
+            for i in range(c_count):
+                _, cl = sess.run([opt_c, c_loss], feed_dict={input_image: imgs_batch, mask: mask_np, z: noise})
                 cl_m += cl
-            cl_m /= FLAGS.run_discriminator_per_train_batch_idx
+            cl_m /= c_count
 
             gl_m = 0
             for i in range(FLAGS.run_generator_per_train_batch_idx):
-                _, gl = sess.run([opt_g, tf.reduce_mean(g_loss)], feed_dict={input_image: imgs_batch, mask: mask_np})
+                _, gl = sess.run([opt_g, g_loss], feed_dict={z: noise})
                 gl_m += gl
             gl_m /= FLAGS.run_generator_per_train_batch_idx
 
