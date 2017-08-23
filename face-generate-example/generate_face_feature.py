@@ -2,7 +2,7 @@
 # @Author: bluekingdom
 # @Date:   2017-08-20 14:42:38
 # @Last Modified by:   bluekingdom
-# @Last Modified time: 2017-08-22 17:15:50
+# @Last Modified time: 2017-08-23 11:48:27
 
 import tensorflow as tf
 import tensorflow.contrib.layers as ly
@@ -16,14 +16,14 @@ from inception_resnet_v1 import inception_resnet_v1, inference
 from utils import *
 from dense_net import *
 
-tf.flags.DEFINE_float("lr", 0.001, "learning rate (default: 0.001)")
+tf.flags.DEFINE_float("lr", 5e-5, "learning rate (default: 0.001)")
 tf.flags.DEFINE_integer("num_checkpoints", 1, "Number of checkpoints to store (default: 5)")
 tf.flags.DEFINE_string("checkpoint_file", "", "model restore")
 tf.flags.DEFINE_integer("val_pre_train_batch_iter", 50, "val model")
 tf.flags.DEFINE_float("corruption_level", 0.2, "corruption_level")
 tf.flags.DEFINE_float("val_ratio", 0.05, "val data ratio")
-tf.flags.DEFINE_integer("run_discriminator_per_train_batch_idx", 1, "")
-tf.flags.DEFINE_integer("run_generator_per_train_batch_idx", 100, "")
+tf.flags.DEFINE_integer("run_discriminator_per_train_batch_idx", 100, "")
+tf.flags.DEFINE_integer("run_generator_per_train_batch_idx", 1, "")
 tf.flags.DEFINE_integer("batch_size", 64, "batch size")
 tf.flags.DEFINE_integer("total_epoch", 100, "total epoch number")
 
@@ -72,8 +72,9 @@ def generator_mlp(z):
         train, ngf, activation_fn=lrelu, normalizer_fn=ly.batch_norm)
     train = ly.fully_connected(
         train, ngf, activation_fn=lrelu, normalizer_fn=ly.batch_norm)
-    train = ly.fully_connected(
-        train, feature_length, activation_fn=tf.nn.tanh, normalizer_fn=ly.batch_norm)
+    # train = ly.fully_connected(train, feature_length, activation_fn=tf.nn.tanh, normalizer_fn=ly.batch_norm)
+    train = ly.fully_connected(train, feature_length, 
+        activation_fn=None, normalizer_fn=None)
     return train
 
 def critic_mlp(x, reuse=False):
@@ -99,10 +100,8 @@ def build_graph():
         train = generator_mlp(z)
     true_logit = critic_mlp(X)
     fake_logit = critic_mlp(train, reuse=True)
-    # c_loss = tf.reduce_mean(fake_logit - true_logit)
-    # g_loss = tf.reduce_mean(-fake_logit)
-    c_loss = tf.reduce_mean(-fake_logit + true_logit)
-    g_loss = tf.reduce_mean(fake_logit)
+    c_loss = tf.reduce_mean(fake_logit - true_logit)
+    g_loss = tf.reduce_mean(-fake_logit)
 
     theta_g = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='generator')
     theta_c = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='critic')
@@ -173,18 +172,17 @@ def train():
                 print('iter: %6d, val_loss: %0.5f' % (train_batch_idx, val_loss))
                 pass
 
-            gl_m = 0
-            for i in range(FLAGS.run_generator_per_train_batch_idx):
-                _, gl = sess.run([opt_g, tf.reduce_mean(g_loss)], feed_dict={input_image: imgs_batch, mask: mask_np})
-                gl_m += gl
-            gl_m /= FLAGS.run_generator_per_train_batch_idx
-
-
             cl_m = 0
             for i in range(FLAGS.run_discriminator_per_train_batch_idx):
                 _, cl = sess.run([opt_c, tf.reduce_mean(c_loss)], feed_dict={input_image: imgs_batch, mask: mask_np})
                 cl_m += cl
             cl_m /= FLAGS.run_discriminator_per_train_batch_idx
+
+            gl_m = 0
+            for i in range(FLAGS.run_generator_per_train_batch_idx):
+                _, gl = sess.run([opt_g, tf.reduce_mean(g_loss)], feed_dict={input_image: imgs_batch, mask: mask_np})
+                gl_m += gl
+            gl_m /= FLAGS.run_generator_per_train_batch_idx
 
             print('iter: %5d, g_loss: %0.5f, c_loss: %0.5f' % (train_batch_idx, gl_m, cl_m))
 
