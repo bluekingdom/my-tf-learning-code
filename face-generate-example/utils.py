@@ -3,7 +3,7 @@
 * @File Name:   		utils.py
 * @Author:				Wang Yang
 * @Created Date:		2017-08-19 09:08:47
-* @Last Modified Data:	2017-09-26 21:51:14
+* @Last Modified Data:	2017-09-27 21:35:19
 * @Desc:					
 *
 """
@@ -107,10 +107,11 @@ def batch_iter(data, batch_size, num_epochs, resize_size=(160, 160), shuffle=Fal
                     img = cv2.resize(cv2.imread(d), resize_size)  
                     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                     img = img.astype(np.float32) / 255.0
-                    batch.append(img) 
                 except Exception as err:
+                    img = np.zeros((resize_size[0], resize_size[1], 3), dtype=np.float32)
                     print(err) 
-                    # batch = [cv2.resize(cv2.imread(d), (x_h, x_w)) for d in data[start_index:end_index]]
+
+                batch.append(img) 
 
             if len(batch) == 0:
                 continue
