@@ -3,7 +3,7 @@
 * @File Name:   		utils.py
 * @Author:				Wang Yang
 * @Created Date:		2017-08-19 09:08:47
-* @Last Modified Data:	2017-08-20 13:09:35
+* @Last Modified Data:	2017-09-26 21:51:14
 * @Desc:					
 *
 """
@@ -20,6 +20,7 @@ import re
 import numpy as np
 import random
 import cv2
+import tensorflow as tf
 
 def save_var(var_name, var, temp_folder):
     if False == os.path.exists(temp_folder):
@@ -115,6 +116,29 @@ def batch_iter(data, batch_size, num_epochs, resize_size=(160, 160), shuffle=Fal
                 continue
 
             yield np.array(batch)
+        pass
+    pass
+
+def restore_network(saver, sess, checkpoint_file, num_checkpoints, pretrain_file, pretrain_vars):
+    if len(checkpoint_file) != 0:
+        meta_file, ckpt_file = get_model_filenames(checkpoint_file)
+        if os.path.exists(meta_file) and os.path.exists(ckpt_file + '.index'):
+            # pretrain_saver = tf.train.import_meta_graph(meta_file)
+            # pretrain_saver.restore(sess, ckpt_file)
+            saver.restore(sess, ckpt_file)
+            print('restore from checkpoint: ', checkpoint_file)
+        else:
+            print('file not exists: ', meta_file, ckpt_file)
+            sys.exit()
+    elif pretrain_file != '':
+        meta_file, ckpt_file = get_model_filenames(pretrain_file)
+        if os.path.exists(meta_file) and os.path.exists(ckpt_file + '.index'):
+            pretrain_saver = tf.train.Saver(pretrain_vars, max_to_keep=num_checkpoints)
+            pretrain_saver.restore(sess, ckpt_file)
+            print('restore from pretrain: ', pretrain_file)
+        else:
+            print('file not exists: ', meta_file, ckpt_file)
+            sys.exit()
         pass
     pass
 

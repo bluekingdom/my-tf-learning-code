@@ -5,10 +5,12 @@ import os
 from inception_resnet_v1 import inception_resnet_v1, inference
 from utils import *
 from dense_net import *
+from generator_net import get_feature_to_image_net
 
 tf.flags.DEFINE_float("lr", 0.001, "learning rate (default: 0.001)")
 tf.flags.DEFINE_integer("num_checkpoints", 1, "Number of checkpoints to store (default: 5)")
 tf.flags.DEFINE_string("checkpoint_file", "", "model restore")
+tf.flags.DEFINE_string("pretrain_file", "", "pretrain model")
 tf.flags.DEFINE_integer("val_pre_train_batch_iter", 50, "val model")
 tf.flags.DEFINE_float("corruption_level", 0.2, "corruption_level")
 tf.flags.DEFINE_float("val_ratio", 0.05, "val data ratio")
@@ -61,50 +63,7 @@ with tf.device('gpu:0'), tf.name_scope("d_net"):
 # for (k,v) in d_weights.items():
 #     print(k, v)
 
-def get_generate_net(net, batch_size):
 
-    weights = {}
-    print('init weights\n')
-    with tf.device('gpu:0'), tf.name_scope("generate_net"):
-        for i in range(1, scale_step + 1, 1):
-            output_scale = 2 ** (i-2)
-            o1 = output_scale * base_output_size if i > 1 else channels
-            o2 = 2 * output_scale * base_output_size
-            shape = [3, 3, int(o1), int(o2)]
-            # print(i, shape)
-            weights['rw%d' % i] = init_weights(shape)
-            shape = [3, 3, int(o2), int(o2)]
-            weights['rw%d_conv' % i] = init_weights(shape)
-            weights['rw%d_bias' % i] = init_weights([int(o2)])
-        weights['rw6'] = init_weights([3, 3, 1536, 1792])
-        weights['rw6_conv'] = init_weights([3, 3, 1792, 1792])
-        weights['rw6_bias'] = init_weights([1792])
-
-        # print('weights:')
-        # for (k,v) in weights.items():
-        #     print(k, v)
-
-        for i in range(scale_step - 1, -1, -1):
-            #  160  80  40  20  10    5
-            #    c  96 192 384 768 1536
-            size = float(2 ** i)
-            output_size = base_output_size * size / 2 if i > 0 else channels
-            up_shape = [batch_size, int(np.ceil(x_h / size)), int(np.ceil(x_w / size)), int(output_size)]
-            print(i, up_shape)
-
-            net = tf.nn.conv2d(net, weights['rw%d_conv' % (i+1)], strides=[1,1,1,1], padding="SAME")
-            net = tf.nn.bias_add(net, weights['rw%d_bias' % (i+1)])
-            net = tf.nn.relu(net)
-
-            net = tf.nn.conv2d_transpose(net, weights['rw%d' % (i+1)], output_shape=up_shape, strides=[1,2,2,1], padding="SAME")
-
-            if i != 0:
-                net = tf.nn.relu(net)
-            else:
-                net = tf.nn.sigmoid(net)
-        pass
-
-    return net
 
 # net define
 with tf.device('gpu:0'):
@@ -121,17 +80,7 @@ def model(X, mask, p_keep_conv, batch_size):
         # ir_net, _= inception_resnet_v1(tilde_X, is_training=False)
         ir_net, _= inference(tilde_X, 0.8, phase_train=False)
 
-        f_net_shape = ir_net.get_shape().as_list()
-        print(f_net_shape)
-        fc_shape = f_net_shape[1]
-        feature1 = tf.contrib.layers.fully_connected(ir_net, fc_shape, scope='feature1')
-        feature1 = tf.nn.dropout(feature1, p_keep_conv)
-        feature2 = tf.contrib.layers.fully_connected(feature1, 3 * 3 * 1792, scope='feature2')
-        f_net_shape = [tf.shape(X)[0], 3, 3, 1792]
-        up_sacle_net = tf.reshape(feature2, f_net_shape)
-
-        # use normal upsample net
-        net = get_generate_net(up_sacle_net, batch_size)
+        net = get_feature_to_image_net(ir_net, batch_size, scale_step, base_output_size, channels, p_keep_conv, x_w, x_h)
 
         # use dense net
         # densenet = DenseNet(growth_rate=24, layers_per_block=5, keep_prob=0.8, is_training=True)
@@ -184,28 +133,25 @@ D_opt = tf.train.AdamOptimizer().minimize(D_obj, var_list=d_weights.values())
 train_opt = l2_obj + FLAGS.gan_coef * G_obj
 train_op = tf.train.AdamOptimizer(FLAGS.lr).minimize(train_opt)  # construct an optimizer
 
-saver = tf.train.Saver(tf.global_variables(), max_to_keep=FLAGS.num_checkpoints)
-# saver = tf.train.Saver(tf.trainable_variables(), max_to_keep=FLAGS.num_checkpoints)
+# saver = tf.train.Saver(tf.global_variables(), max_to_keep=FLAGS.num_checkpoints)
+trainable_variables = tf.trainable_variables()
+saver = tf.train.Saver(trainable_variables, max_to_keep=FLAGS.num_checkpoints)
 
+print('----------trainable vars------------')
+for op in trainable_variables:
+    print(op.name)
+print('----------trainable vars------------')
+
+config = tf.ConfigProto()  
+config.gpu_options.allow_growth=True
 # Launch the graph in a session
-with tf.Session() as sess:
+with tf.Session(config=config) as sess:
 
     # you need to initialize all variables
     tf.global_variables_initializer().run()
 
-    if len(FLAGS.checkpoint_file) != 0:
-        meta_file, ckpt_file = get_model_filenames(FLAGS.checkpoint_file)
-        if os.path.exists(meta_file) and os.path.exists(ckpt_file + '.index'):
-            set_A_vars = [v for v in tf.trainable_variables() if v.name.startswith('InceptionResnetV1')]
-            pretrain_saver = tf.train.Saver(set_A_vars, max_to_keep=FLAGS.num_checkpoints)
-            # pretrain_saver = tf.train.import_meta_graph(meta_file)
-            pretrain_saver.restore(sess, ckpt_file)
-            # saver.restore(sess, ckpt_file)
-            print('restore from checkpoint: ', FLAGS.checkpoint_file)
-        else:
-            print('file not exists: ', meta_file, ckpt_file)
-            sys.exit()
-
+    pretrain_vars = [v for v in tf.trainable_variables() if v.name.startswith('InceptionResnetV1')]
+    restore_network(saver, sess, FLAGS.checkpoint_file, FLAGS.num_checkpoints, FLAGS.pretrain_file, pretrain_vars)
 
     min_loss = 1e20
     train_loss = 1e20

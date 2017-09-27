@@ -15,10 +15,12 @@ from functools import partial
 from inception_resnet_v1 import inception_resnet_v1, inference
 from utils import *
 from dense_net import *
+from generator_net import get_feature_to_image_net
 
 tf.flags.DEFINE_float("lr", 5e-5, "learning rate (default: 0.001)")
 tf.flags.DEFINE_integer("num_checkpoints", 1, "Number of checkpoints to store (default: 5)")
 tf.flags.DEFINE_string("checkpoint_file", "", "model restore")
+tf.flags.DEFINE_string("pretrain_file", "", "pretrain model")
 tf.flags.DEFINE_integer("val_pre_train_batch_iter", 50, "val model")
 tf.flags.DEFINE_float("corruption_level", 0.2, "corruption_level")
 tf.flags.DEFINE_float("val_ratio", 0.05, "val data ratio")
@@ -67,6 +69,15 @@ def get_feature():
 
     return feature
 
+def feature_to_image(feature):
+    base_output_size = 96
+    scale_step = 6
+    p_keep_conv = 1.0
+    generate_image = get_feature_to_image_net(feature, batch_size, scale_step, base_output_size, channels, p_keep_conv, x_w, x_h)
+
+    return generate_image
+
+
 # def generator_mlp(z):
 #     train = ly.fully_connected(
 #         z, ngf, activation_fn=lrelu, normalizer_fn=ly.batch_norm)
@@ -102,6 +113,8 @@ def critic_mlp(x, reuse=False):
 def build_graph():
 
     X = get_feature()
+    generate_image = feature_to_image(X)
+
     # z_dim = X.get_shape().as_list()[1]
 
     # noise_dist = tf.contrib.distributions.Normal(-1., 1.)
@@ -134,11 +147,11 @@ def build_graph():
     with tf.control_dependencies([opt_c]):
         opt_c = tf.tuple(clipped_var_c)
 
-    return opt_g, opt_c, c_loss, g_loss
+    return opt_g, opt_c, c_loss, g_loss, generate_image
 
 
 def train():
-    opt_g, opt_c, c_loss, g_loss = build_graph()
+    opt_g, opt_c, c_loss, g_loss, generate_image = build_graph()
 
     saver = tf.train.Saver(tf.global_variables(), max_to_keep=FLAGS.num_checkpoints)
 
@@ -147,22 +160,16 @@ def train():
         # you need to initialize all variables
         tf.global_variables_initializer().run()
 
-        if len(FLAGS.checkpoint_file) != 0:
-            meta_file, ckpt_file = get_model_filenames(FLAGS.checkpoint_file)
-            if os.path.exists(meta_file) and os.path.exists(ckpt_file + '.index'):
-                set_A_vars = [v for v in tf.trainable_variables() if v.name.startswith('InceptionResnetV1')]
-                pretrain_saver = tf.train.Saver(set_A_vars, max_to_keep=FLAGS.num_checkpoints)
-                # pretrain_saver = tf.train.import_meta_graph(meta_file)
-                pretrain_saver.restore(sess, ckpt_file)
-                # saver.restore(sess, ckpt_file)
-                print('restore from checkpoint: ', FLAGS.checkpoint_file)
-            else:
-                print('file not exists: ', meta_file, ckpt_file)
-                sys.exit()
+        pretrain_vars = [v for v in tf.trainable_variables() if v.name.startswith('InceptionResnetV1')]
+        pretrain_vars += [v for v in tf.trainable_variables() if v.name.startswith('generate_net')]
+        for op in pretrain_vars:
+            print(op.name)
+        restore_network(saver, sess, FLAGS.checkpoint_file, FLAGS.num_checkpoints, FLAGS.pretrain_file, pretrain_vars)
 
         train_imgs_batch = batch_iter(train_files, batch_size, num_epochs=1)
 
         train_batch_idx = 0
+        min_loss = 1e20
         for imgs_batch in train_imgs_batch:
             noise = np.random.normal(size=(imgs_batch.shape[0], z_dim))
             mask_np = np.random.binomial(1, 1 - FLAGS.corruption_level, imgs_batch.shape)
@@ -181,7 +188,17 @@ def train():
                     val_loss += sess.run(tf.reduce_mean(c_loss), feed_dict={input_image: val_b, mask: val_mask_np, z: noise})
 
                 val_loss /= val_iter_count
-                print('iter: %6d, val_loss: %0.5f' % (train_batch_idx, val_loss))
+                print('iter: %6d, val_loss: %0.5f, min_loss: %0.5f' % (train_batch_idx, val_loss, min_loss))
+                if abs(min_loss) > abs(val_loss):
+                    min_loss = val_loss
+                    path = saver.save(sess, "models/feature_model", global_step=train_batch_idx)
+                    print("Saved model checkpoint to {}".format(path))
+                    pass
+
+
+                predicted_imgs = sess.run(generate_image, feed_dict={input_image: imgs_batch, mask: mask_np, z: noise})
+                vis(predicted_imgs, 'feature_pred_%d' % train_batch_idx)
+                vis(np.array(imgs_batch, dtype=np.float32), 'feature_in_%d' % train_batch_idx)
                 pass
 
             cl_m = 0
