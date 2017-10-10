@@ -17,7 +17,7 @@ from utils import *
 from dense_net import *
 from generator_net import get_feature_to_image_net
 
-tf.flags.DEFINE_float("lr", 5e-5, "learning rate (default: 0.001)")
+tf.flags.DEFINE_float("lr", 1e-4, "learning rate (default: 0.001)")
 tf.flags.DEFINE_integer("num_checkpoints", 1, "Number of checkpoints to store (default: 5)")
 tf.flags.DEFINE_string("checkpoint_file", "", "model restore")
 tf.flags.DEFINE_string("pretrain_file", "", "pretrain model")
@@ -126,19 +126,33 @@ def build_graph():
     fake_logit = critic_mlp(train, reuse=True)
     # c_loss = tf.reduce_mean(fake_logit - true_logit)
     c_loss = tf.reduce_mean(fake_logit) - tf.reduce_mean(true_logit)
-    g_loss = tf.reduce_mean(-fake_logit)
+    g_loss = -tf.reduce_mean(fake_logit)
+
+    alpha = tf.random_uniform(
+        shape=[FLAGS.batch_size, 1], 
+        minval=0.,
+        maxval=1.
+    )
+    differences = train - X
+    interpolates = X + (alpha*differences)
+    gradients = tf.gradients(critic_mlp(interpolates, reuse=True), [interpolates])[0]
+    slopes = tf.sqrt(tf.reduce_sum(tf.square(gradients), reduction_indices=[1]))
+    gradient_penalty = tf.reduce_mean((slopes-1.)**2)
+    c_loss += 10 * gradient_penalty
 
     theta_g = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='generator')
     theta_c = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='critic')
 
     counter_g = tf.Variable(trainable=False, initial_value=0, dtype=tf.int32)
     opt_g = ly.optimize_loss(loss=g_loss, learning_rate=FLAGS.lr,
-                    optimizer=tf.train.RMSPropOptimizer, 
+                    # optimizer=tf.train.RMSPropOptimizer, 
+                    optimizer=tf.train.AdamOptimizer, 
                     variables=theta_g, global_step=counter_g)
 
     counter_c = tf.Variable(trainable=False, initial_value=0, dtype=tf.int32)
     opt_c = ly.optimize_loss(loss=c_loss, learning_rate=FLAGS.lr,
-                    optimizer=tf.train.RMSPropOptimizer, 
+                    # optimizer=tf.train.RMSPropOptimizer, 
+                    optimizer=tf.train.AdamOptimizer, 
                     variables=theta_c, global_step=counter_c)
 
     clipped_var_c = [tf.assign(var, tf.clip_by_value(var, clamp_lower, clamp_upper)) for var in theta_c]
@@ -175,7 +189,7 @@ def train():
             mask_np = np.random.binomial(1, 1 - FLAGS.corruption_level, imgs_batch.shape)
             train_batch_idx += 1
 
-            if train_batch_idx % FLAGS.val_pre_train_batch_iter == 1:
+            if train_batch_idx % FLAGS.val_pre_train_batch_iter == FLAGS.val_pre_train_batch_iter - 1:
                 val_batch = batch_iter(val_files, batch_size, num_epochs=1, shuffle=True)
                 val_loss = 0
                 val_iter_count = 0
@@ -201,18 +215,23 @@ def train():
                 vis(np.array(imgs_batch, dtype=np.float32), 'feature_in_%d' % train_batch_idx)
                 pass
 
+            if train_batch_idx > 0:
+                gl_m = 0
+                for i in range(FLAGS.run_generator_per_train_batch_idx):
+                    _, gl = sess.run([opt_g, g_loss], feed_dict={z: noise})
+                    gl_m += gl
+                gl_m /= FLAGS.run_generator_per_train_batch_idx
+                pass
+
             cl_m = 0
-            c_count = FLAGS.run_discriminator_per_train_batch_idx if train_batch_idx > 25 else 20
+            # c_count = FLAGS.run_discriminator_per_train_batch_idx if train_batch_idx > 25 else 20
+            c_count = FLAGS.run_discriminator_per_train_batch_idx
             for i in range(c_count):
                 _, cl = sess.run([opt_c, c_loss], feed_dict={input_image: imgs_batch, mask: mask_np, z: noise})
                 cl_m += cl
             cl_m /= c_count
 
-            gl_m = 0
-            for i in range(FLAGS.run_generator_per_train_batch_idx):
-                _, gl = sess.run([opt_g, g_loss], feed_dict={z: noise})
-                gl_m += gl
-            gl_m /= FLAGS.run_generator_per_train_batch_idx
+
 
             print('iter: %5d, g_loss: %0.5f, c_loss: %0.5f' % (train_batch_idx, gl_m, cl_m))
 
